@@ -1,0 +1,9 @@
+{
+  "slug": "email_utils",
+  "title": "Email Utilities",
+  "tagline": "Regex + functions",
+  "points": 12,
+  "due": "2025-10-08",
+  "self_check": true,
+  "hints": true
+}

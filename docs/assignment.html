@@ -1,0 +1,196 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Assignment</title>
+  <link rel="stylesheet" href="assets/style.css"/>
+  <script defer src="assets/site.js"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo" aria-hidden="true"></div>
+      <div>
+        <div id="title" class="h1">Assignment</div>
+        <div id="meta" class="small"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card" style="flex:2">
+        <h3>Instructions</h3>
+        <div id="instructions">Loading...</div>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>Template</h3>
+        <div class="small">Edit this in your editor (Mu), then submit to Gradescope.</div>
+        <hr/>
+        <pre id="template" class="codebox" aria-label="template code"></pre>
+        <div class="row" style="margin-top:10px;">
+          <button id="copy" class="btn">Copy</button>
+          <button id="download" class="btn">Download</button>
+          <button id="tutor" class="btn">Python Tutor</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="selfcheck_card" class="card hidden" style="margin-top:16px;">
+      <h3>Optional Self‑Check (public tests)</h3>
+      <div class="small">Run a limited check locally in your browser. Official grading still happens on Gradescope.</div>
+      <hr/>
+      <div class="row">
+        <textarea id="student_code" placeholder="Paste your code here to self‑check..."></textarea>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button id="run_tests" class="btn">Run Self‑Check</button>
+        <button id="reset_to_template" class="btn">Reset to Template</button>
+      </div>
+      <hr/>
+      <div id="out" class="output" aria-live="polite"></div>
+    </div>
+
+    <div id="hint_card" class="card hidden" style="margin-top:16px;">
+      <h3>Hint Bot (Socratic)</h3>
+      <div class="small">Local AI hints only (no solutions, no code). Limited to guiding questions and concept pointers.</div>
+      <div class="row" style="margin-top:8px;">
+        <textarea id="hint_prompt" placeholder="Describe where you're stuck. Paste your error messages or a short snippet (no full solutions)."></textarea>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button id="ask_hint" class="btn">Ask for a hint</button>
+        <button id="clear_hint" class="btn">Clear</button>
+      </div>
+      <hr/>
+      <div id="hint_out" class="output"></div>
+    </div>
+
+    <div class="footer">
+      <a class="btn" href="index.html">Back to all assignments</a>
+    </div>
+  </div>
+
+  <script>
+  let manifest, templateCode = "", testsCode = "", pyodideReady = false, pyodide;
+  const slug = qsParam("a");
+
+  (async () => {
+    if(!slug){ alert("Missing assignment slug (?a=slug)"); return; }
+
+    manifest = await fetchJSON(`assignments/${slug}/manifest.json`);
+    $("#title").textContent = manifest.title || slug;
+    $("#meta").textContent = `Due: ${manifest.due || "—"} | Points: ${manifest.points || "—"} | ID: ${slug}`;
+
+    try {
+      const instr = await fetchText(`assignments/${slug}/instructions.html`);
+      $("#instructions").innerHTML = instr;
+    } catch(e){
+      $("#instructions").innerHTML = "<p>Instructions file missing.</p>";
+    }
+
+    try {
+      templateCode = await fetchText(`assignments/${slug}/template.py`);
+      $("#template").textContent = templateCode;
+    } catch(e){
+      $("#template").textContent = "# No template.py found";
+      templateCode = "";
+    }
+
+    $("#copy").addEventListener("click", () => copyToClipboard(templateCode));
+    $("#download").addEventListener("click", () => download(`${slug}_template.py`, templateCode));
+    $("#tutor").addEventListener("click", () => openInPythonTutor(templateCode));
+
+    if(manifest.self_check){
+      $("#selfcheck_card").classList.remove("hidden");
+      $("#student_code").value = templateCode;
+      try { testsCode = await fetchText(`assignments/${slug}/tests_public.py`); } catch(e){ testsCode = ""; }
+
+      if(testsCode){
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js";
+        script.onload = async () => {
+          pyodide = await loadPyodide({indexURL: "https://cdn.jsdelivr.net/pyodide/v0.24.1/full/"});
+          pyodideReady = true;
+        };
+        document.head.appendChild(script);
+      } else {
+        $("#out").textContent = "No public tests provided.";
+      }
+
+      $("#run_tests").addEventListener("click", async () => {
+        if(!testsCode){ $("#out").textContent = "No public tests provided."; return; }
+        if(!pyodideReady){ $("#out").textContent = "Loading Python runtime... try again in a moment."; return; }
+        const user = $("#student_code").value;
+        const harness = `
+import sys, traceback, io
+global_ns = {}
+user_src = r"""${user}"""
+tests_src = r"""${testsCode}"""
+
+buf = io.StringIO()
+try:
+    exec(user_src, global_ns)
+    exec(tests_src, global_ns)
+    print("✅ All public tests passed.")
+except AssertionError as e:
+    print("❌ Test failed:", e)
+except Exception as e:
+    print("💥 Exception in your code or tests:")
+    traceback.print_exc()
+        `;
+        try{
+          const result = await pyodide.runPythonAsync(harness);
+          $("#out").textContent = result ?? "(finished)";
+        }catch(err){
+          $("#out").textContent = String(err);
+        }
+      });
+
+      $("#reset_to_template").addEventListener("click", () => { $("#student_code").value = templateCode; $("#out").textContent=""; });
+    }
+
+    if(manifest.hints){
+      $("#hint_card").classList.remove("hidden");
+      const s = document.createElement("script");
+      s.type = "module";
+      s.innerHTML = `
+        import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+        const sysPrompt = \`
+You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests.
+Ask short guiding questions that point the student to docs, debugging steps, or concepts.
+If asked for code, reply: "I can’t provide code, but here’s a hint:" and continue with questions.\`;
+
+        let engine;
+        async function boot(){
+          try{
+            engine = await webllm.createEngine({model:"Llama-3.2-1B-Instruct-q4f32_1-MLC"});
+            document.getElementById("hint_out").textContent = "Hint Bot ready.";
+          }catch(e){
+            document.getElementById("hint_out").textContent = "Hint Bot unavailable on this device (needs WebGPU).";
+          }
+        }
+        boot();
+
+        window.__ask_hint = async function(prompt){
+          if(!engine){ document.getElementById("hint_out").textContent = "Loading model..."; return; }
+          const msg = [
+            {role:"system", content: sysPrompt},
+            {role:"user", content: prompt }
+          ];
+          const out = await engine.chat.completions.create({messages: msg, temperature: 0.2, max_tokens: 200});
+          document.getElementById("hint_out").textContent = out.choices?.[0]?.message?.content || "No response.";
+        }
+      `;
+      document.head.appendChild(s);
+      $("#ask_hint").addEventListener("click", () => {
+        const p = $("#hint_prompt").value.trim();
+        if(!p){ $("#hint_out").textContent = "Please describe where you're stuck."; return; }
+        window.__ask_hint?.(p);
+      });
+      $("#clear_hint").addEventListener("click", () => { $("#hint_prompt").value=""; $("#hint_out").textContent=""; });
+    }
+
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "assignments": [
+    {
+      "slug": "fizzbuzz",
+      "title": "FizzBuzz Basics",
+      "tagline": "Loops, conditionals, modulo",
+      "points": 10,
+      "due": "2025-10-01"
+    },
+    {
+      "slug": "email_utils",
+      "title": "Email Utilities",
+      "tagline": "Regex + functions",
+      "points": 12,
+      "due": "2025-10-08"
+    }
+  ]
+}

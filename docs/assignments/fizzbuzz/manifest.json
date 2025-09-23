@@ -1,0 +1,9 @@
+{
+  "slug": "fizzbuzz",
+  "title": "FizzBuzz Basics",
+  "tagline": "Loops, conditionals, modulo",
+  "points": 10,
+  "due": "2025-10-01",
+  "self_check": true,
+  "hints": true
+}
