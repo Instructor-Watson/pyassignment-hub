@@ -1,12 +1,12 @@
-
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>PyAssignment Hub</title>
+  <!-- Load helpers first (no defer) so inline code can use them -->
+  <script src="assets/site.js?v=2"></script>
   <link rel="stylesheet" href="assets/style.css"/>
-  <script defer src="assets/site.js"></script>
 </head>
 <body>
   <div class="container">
@@ -26,26 +26,35 @@
       <ol>
         <li>Create <span class="kbd">docs/assignments/&lt;slug&gt;/</span></li>
         <li>Add <span class="kbd">manifest.json</span>, <span class="kbd">template.py</span>, <span class="kbd">instructions.html</span>, optional <span class="kbd">tests_public.py</span></li>
-        <li>Append an entry in <span class="kbd">docs/assignments/manifest.json</span> (or just copy an existing folder and tweak).</li>
+        <li>Append an entry in <span class="kbd">docs/assignments/manifest.json</span>.</li>
       </ol>
+      <div id="diagnostics" class="small"></div>
     </div>
   </div>
 
   <script>
-  (async () => {
-    const list = await fetchJSON("assignments/manifest.json");
-    const el = document.getElementById("cards");
-    el.innerHTML = list.assignments.map(a => `
-      <div class="card">
-        <h3>${a.title}</h3>
-        <div class="small">${a.tagline || ""}</div>
-        <div class="small">Due: ${a.due || "—"} | Points: ${a.points || "—"}</div>
-        <div style="margin-top:10px;">
-          <a class="btn" href="assignment.html?a=${encodeURIComponent(a.slug)}">Open</a>
+  window.addEventListener('DOMContentLoaded', async () => {
+    const diag = document.getElementById('diagnostics');
+    try{
+      const list = await fetchJSON("assignments/manifest.json");
+      if(!list.assignments){ throw new Error("Missing 'assignments' array"); }
+      const el = document.getElementById("cards");
+      el.innerHTML = list.assignments.map(a => `
+        <div class="card">
+          <h3>${a.title}</h3>
+          <div class="small">${a.tagline || ""}</div>
+          <div class="small">Due: ${a.due || "—"} | Points: ${a.points || "—"}</div>
+          <div style="margin-top:10px;">
+            <a class="btn" href="assignment.html?a=${encodeURIComponent(a.slug)}">Open</a>
+          </div>
         </div>
-      </div>
-    `).join("");
-  })();
+      `).join("");
+      diag.textContent = "";
+    }catch(e){
+      diag.textContent = "Failed to load assignments/manifest.json → " + e.message;
+      console.error(e);
+    }
+  });
   </script>
 </body>
 </html>
