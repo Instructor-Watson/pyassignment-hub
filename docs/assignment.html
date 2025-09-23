@@ -163,17 +163,17 @@
       if(manifest.hints){
         document.getElementById("hint_card").classList.remove("hidden");
         const ui = document.getElementById("hint_out");
-
+      
         async function hasWebGPU() {
           if (!navigator.gpu) return false;
           try {
-            const adapter = await navigator.gpu.requestAdapter();
-            if (!adapter) return false;
-            const device = await adapter.requestDevice();
-            return !!device;
+            const ad = await navigator.gpu.requestAdapter();
+            if (!ad) return false;
+            await ad.requestDevice();
+            return true;
           } catch { return false; }
         }
-
+      
         if (!(await hasWebGPU())) {
           ui.textContent = "WebGPU not available on this device/browser (or blocked). Try latest Chrome/Edge on desktop.";
         } else {
@@ -182,35 +182,48 @@
           s.innerHTML = `
             import * as webllm from "https://esm.run/@mlc-ai/web-llm@0.2.70";
             const ui = document.getElementById("hint_out");
-            const model = "Llama-3.2-1B-Instruct-q4f16_0-MLC";
-            let engine;
-            async function boot(){
-              try{
-                engine = await webllm.CreateMLCEngine(model, {
+      
+            // Try several prebuilt model IDs; pick the first that exists in this web-llm build
+            const candidates = [
+              "Phi-3.1-mini-4k-instruct-q4f16_1-MLC",   // tiny, fast (preferred)
+              "Phi-3-mini-4k-instruct-q4f16_0-MLC",
+              "Llama-3.2-1B-Instruct-q4f32_1-MLC",
+              "Llama-3.1-8B-Instruct-q4f32_1-MLC"       // heavier fallback
+            ];
+      
+            let engine, lastErr;
+      
+            for (const id of candidates) {
+              try {
+                engine = await webllm.CreateMLCEngine(id, {
                   initProgressCallback: (r) => {
                     const pct = r.progress ? " " + Math.round(r.progress*100) + "%" : "";
-                    ui.textContent = (r.text || "Loading model...") + pct;
+                    ui.textContent = (r.text || \`Loading \${id}...\`) + pct;
                   }
                 });
                 ui.textContent = "Hint Bot ready.";
-              }catch(e){
-                ui.textContent = "Failed to load model: " + (e?.message || e);
-                console.error(e);
+                // Wire the ask function once we have an engine
+                window.__ask_hint = async function(prompt){
+                  if(!engine){ ui.textContent = "Model still loading..."; return; }
+                  const sys = "You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests. Ask short guiding questions that point the student to docs, debugging steps, or concepts. If asked for code, reply: 'I can’t provide code, but here’s a hint:' and continue with questions.";
+                  const messages = [{role:"system", content: sys},{role:"user", content: prompt}];
+                  try{
+                    const out = await engine.chat.completions.create({messages, temperature: 0.2, max_tokens: 200});
+                    ui.textContent = out.choices?.[0]?.message?.content || "No response.";
+                  }catch(e){
+                    ui.textContent = "Run error: " + (e?.message || e);
+                    console.error(e);
+                  }
+                };
+                break; // success
+              } catch (e) {
+                lastErr = e;
+                console.warn("Model failed:", id, e);
               }
             }
-            boot();
-
-            window.__ask_hint = async function(prompt){
-              if(!engine){ ui.textContent = "Model still loading..."; return; }
-              const sys = "You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests. Ask short guiding questions that point the student to docs, debugging steps, or concepts. If asked for code, reply: 'I can’t provide code, but here’s a hint:' and continue with questions.";
-              const messages = [{role:"system", content: sys},{role:"user", content: prompt}];
-              try{
-                const out = await engine.chat.completions.create({messages, temperature: 0.2, max_tokens: 200});
-                ui.textContent = out.choices?.[0]?.message?.content || "No response.";
-              }catch(e){
-                ui.textContent = "Run error: " + (e?.message || e);
-                console.error(e);
-              }
+      
+            if (!engine) {
+              ui.textContent = "Failed to load a model from the candidate list. " + (lastErr?.message || lastErr || "");
             }
           `;
           document.head.appendChild(s);
