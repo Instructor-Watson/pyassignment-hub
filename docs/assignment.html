@@ -122,39 +122,41 @@
           document.getElementById("out").textContent = "No public tests provided.";
         }
 
-        document.getElementById("run_tests").addEventListener("click", async () => {
-          if(!testsCode){ document.getElementById("out").textContent = "No public tests provided."; return; }
-          if(!pyodideReady){ document.getElementById("out").textContent = "Loading Python runtime... try again in a moment."; return; }
+      document.getElementById("run_tests").addEventListener("click", async () => {
+          if (!testsCode) { document.getElementById("out").textContent = "No public tests provided."; return; }
+          if (!pyodideReady) { document.getElementById("out").textContent = "Loading Python runtime... try again in a moment."; return; }
+      
           const user = document.getElementById("student_code").value;
-
-          // Avoid nested backticks by building Python source via join()
+      
+          // Safely embed user/tests code as JSON strings (no triple quotes, no escaping headaches)
+          const userJson  = JSON.stringify(user);
+          const testsJson = JSON.stringify(testsCode);
+      
           const harness = [
-            "import sys, traceback, io",
+            "import sys, traceback, io, json",
             "global_ns = {}",
-            "user_src = r"""" + user + """"",
-            "tests_src = r"""" + testsCode + """"",
+            "user_src  = json.loads(" + userJson  + ")",
+            "tests_src = json.loads(" + testsJson + ")",
             "",
             "buf = io.StringIO()",
             "try:",
-            "    exec(user_src, global_ns)",
+            "    exec(user_src,  global_ns)",
             "    exec(tests_src, global_ns)",
-            "    print("✅ All public tests passed.")",
+            '    print(\"✅ All public tests passed.\")',
             "except AssertionError as e:",
-            "    print("❌ Test failed:", e)",
+            '    print(\"❌ Test failed:\", e)',
             "except Exception as e:",
-            "    print("💥 Exception in your code or tests:")",
+            '    print(\"💥 Exception in your code or tests:\")',
             "    traceback.print_exc()"
-          ].join("\n");
-
-          try{
+          ].join("\\n");
+      
+          try {
             const result = await pyodide.runPythonAsync(harness);
             document.getElementById("out").textContent = result ?? "(finished)";
-          }catch(err){
+          } catch (err) {
             document.getElementById("out").textContent = String(err);
           }
         });
-
-        document.getElementById("reset_to_template").addEventListener("click", () => { document.getElementById("student_code").value = templateCode; document.getElementById("out").textContent=""; });
       }
 
       // ---- Hint Bot loader (robust) ----
