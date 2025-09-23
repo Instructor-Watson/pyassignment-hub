@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Assignment</title>
   <!-- Load helpers first -->
-  <script src="assets/site.js?v=2"></script>
+  <script src="assets/site.js?v=3"></script>
   <link rel="stylesheet" href="assets/style.css"/>
 </head>
 <body>
@@ -79,13 +79,13 @@
       const slug = qsParam("a");
       if(!slug){ throw new Error("Missing ?a=<slug>"); }
 
-      manifest = await fetchJSON(`assignments/${slug}/manifest.json`);
+      manifest = await fetchJSON(\`assignments/\${slug}/manifest.json\`);
       document.getElementById("title").textContent = manifest.title || slug;
-      document.getElementById("meta").textContent = `Due: ${manifest.due || "—"} | Points: ${manifest.points || "—"} | ID: ${slug}`;
+      document.getElementById("meta").textContent = \`Due: \${manifest.due || "—"} | Points: \${manifest.points || "—"} | ID: \${slug}\`;
 
       // Instructions
       try {
-        const instr = await fetchText(`assignments/${slug}/instructions.html`);
+        const instr = await fetchText(\`assignments/\${slug}/instructions.html\`);
         document.getElementById("instructions").innerHTML = instr;
       } catch(e){
         document.getElementById("instructions").innerHTML = "<p>Instructions file missing.</p>";
@@ -94,7 +94,7 @@
 
       // Template
       try {
-        templateCode = await fetchText(`assignments/${slug}/template.py`);
+        templateCode = await fetchText(\`assignments/\${slug}/template.py\`);
         document.getElementById("template").textContent = templateCode || "# (empty template)";
       } catch(e){
         document.getElementById("template").textContent = "# No template.py found";
@@ -102,14 +102,14 @@
       }
 
       document.getElementById("copy").addEventListener("click", () => copyToClipboard(templateCode));
-      document.getElementById("download").addEventListener("click", () => download(`${slug}_template.py`, templateCode));
+      document.getElementById("download").addEventListener("click", () => download(\`\${slug}_template.py\`, templateCode));
       document.getElementById("tutor").addEventListener("click", () => openInPythonTutor(templateCode));
 
       // Self-check
       if(manifest.self_check){
         document.getElementById("selfcheck_card").classList.remove("hidden");
         document.getElementById("student_code").value = templateCode;
-        try { testsCode = await fetchText(`assignments/${slug}/tests_public.py`); } catch(e){ testsCode = ""; }
+        try { testsCode = await fetchText(\`assignments/\${slug}/tests_public.py\`); } catch(e){ testsCode = ""; }
 
         if(testsCode){
           const script = document.createElement("script");
@@ -155,39 +155,57 @@ except Exception as e:
         document.getElementById("reset_to_template").addEventListener("click", () => { document.getElementById("student_code").value = templateCode; document.getElementById("out").textContent=""; });
       }
 
+      // Hint Bot with robust loader
       if(manifest.hints){
         document.getElementById("hint_card").classList.remove("hidden");
-        const s = document.createElement("script");
-        s.type = "module";
-        s.innerHTML = `
-          import * as webllm from "https://esm.run/@mlc-ai/web-llm";
-          const sysPrompt = \`
-You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests.
-Ask short guiding questions that point the student to docs, debugging steps, or concepts.
-If asked for code, reply: "I can’t provide code, but here’s a hint:" and continue with questions.\`;
+        const ui = document.getElementById("hint_out");
 
-          let engine;
-          async function boot(){
-            try{
-              engine = await webllm.createEngine({model:"Llama-3.2-1B-Instruct-q4f32_1-MLC"});
-              document.getElementById("hint_out").textContent = "Hint Bot ready.";
-            }catch(e){
-              document.getElementById("hint_out").textContent = "Hint Bot unavailable on this device (needs WebGPU).";
+        if(!("gpu" in navigator)){
+          ui.textContent = "WebGPU not supported in this browser. Try latest Chrome or Edge on desktop.";
+        } else {
+          const s = document.createElement("script");
+          s.type = "module";
+          s.innerHTML = `
+            import * as webllm from "https://esm.run/@mlc-ai/web-llm@0.2.70";
+            const ui = document.getElementById("hint_out");
+            const model = "Llama-3.2-1B-Instruct-q4f16_0-MLC"; // small, faster to load
+
+            let engine;
+            async function boot(){
+              try{
+                engine = await webllm.CreateMLCEngine(model, {
+                  initProgressCallback: (report) => {
+                    const pct = report.progress ? " " + Math.round(report.progress*100) + "%" : "";
+                    ui.textContent = (report.text || "Loading model...") + pct;
+                  }
+                });
+                ui.textContent = "Hint Bot ready.";
+              }catch(e){
+                ui.textContent = "Failed to load model: " + (e?.message || e);
+                console.error(e);
+              }
             }
-          }
-          boot();
+            boot();
 
-          window.__ask_hint = async function(prompt){
-            if(!engine){ document.getElementById("hint_out").textContent = "Loading model..."; return; }
-            const msg = [
-              {role:"system", content: sysPrompt},
-              {role:"user", content: prompt }
-            ];
-            const out = await engine.chat.completions.create({messages: msg, temperature: 0.2, max_tokens: 200});
-            document.getElementById("hint_out").textContent = out.choices?.[0]?.message?.content || "No response.";
-          }
-        `;
-        document.head.appendChild(s);
+            window.__ask_hint = async function(prompt){
+              if(!engine){ ui.textContent = "Model still loading..."; return; }
+              const sysPrompt = "You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests. Ask short guiding questions that point the student to docs, debugging steps, or concepts. If asked for code, reply: 'I can’t provide code, but here’s a hint:' and continue with questions.";
+              const messages = [
+                {role:"system", content: sysPrompt},
+                {role:"user", content: prompt }
+              ];
+              try{
+                const out = await engine.chat.completions.create({messages, temperature: 0.2, max_tokens: 200});
+                ui.textContent = out.choices?.[0]?.message?.content || "No response.";
+              }catch(e){
+                ui.textContent = "Run error: " + (e?.message || e);
+                console.error(e);
+              }
+            }
+          `;
+          document.head.appendChild(s);
+        }
+
         document.getElementById("ask_hint").addEventListener("click", () => {
           const p = document.getElementById("hint_prompt").value.trim();
           if(!p){ document.getElementById("hint_out").textContent = "Please describe where you're stuck."; return; }
