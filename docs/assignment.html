@@ -54,15 +54,16 @@
     <div id="hint_card" class="card hidden" style="margin-top:16px;">
       <h3>Hint Bot (Socratic)</h3>
       <div class="small">Local AI hints only (no solutions, no code). Limited to guiding questions and concept pointers.</div>
+      <div id="hint_chat" class="chatlog" aria-live="polite" aria-label="Hint conversation"></div>
       <div class="row" style="margin-top:8px;">
-        <textarea id="hint_prompt" placeholder="Describe where you're stuck. Paste your error messages or a short snippet (no full solutions)."></textarea>
+        <textarea id="hint_prompt" placeholder="Describe where you're stuck. Paste your error messages or a short snippet (no full solutions)." aria-label="Message for the hint bot"></textarea>
       </div>
       <div class="row" style="margin-top:8px;">
-        <button id="ask_hint" class="btn">Ask for a hint</button>
+        <button id="ask_hint" class="btn">Send</button>
         <button id="clear_hint" class="btn">Clear</button>
       </div>
       <hr/>
-      <div id="hint_out" class="output"></div>
+      <div id="hint_status" class="small"></div>
     </div>
 
     <div class="footer">
@@ -128,42 +129,55 @@
       
           const user = document.getElementById("student_code").value;
       
-          // Safely embed user/tests code as JSON strings (no triple quotes, no escaping headaches)
-          const userJson  = JSON.stringify(user);
-          const testsJson = JSON.stringify(testsCode);
-      
-          const harness = [
-            "import sys, traceback, io, json",
-            "global_ns = {}",
-            "user_src  = json.loads(" + userJson  + ")",
-            "tests_src = json.loads(" + testsJson + ")",
-            "",
-            "buf = io.StringIO()",
-            "try:",
-            "    exec(user_src,  global_ns)",
-            "    exec(tests_src, global_ns)",
-            '    print(\"✅ All public tests passed.\")',
-            "except AssertionError as e:",
-            '    print(\"❌ Test failed:\", e)',
-            "except Exception as e:",
-            '    print(\"💥 Exception in your code or tests:\")',
-            "    traceback.print_exc()"
-          ].join("\\n");
-      
+          let resultText = "";
+          const harness = `
+import sys, traceback, io
+user_src  = USER_SOURCE
+tests_src = TEST_SOURCE
+global_ns = {}
+buf = io.StringIO()
+orig_stdout, orig_stderr = sys.stdout, sys.stderr
+sys.stdout = buf
+sys.stderr = buf
+try:
+    exec(user_src,  global_ns)
+    exec(tests_src, global_ns)
+    print("✅ All public tests passed.")
+except AssertionError as e:
+    print("❌ Test failed:", e)
+except Exception:
+    print("💥 Exception in your code or tests:")
+    traceback.print_exc()
+finally:
+    sys.stdout = orig_stdout
+    sys.stderr = orig_stderr
+buf.getvalue()
+`.trim();
+
           try {
+            pyodide.globals.set("USER_SOURCE", user);
+            pyodide.globals.set("TEST_SOURCE", testsCode);
             const result = await pyodide.runPythonAsync(harness);
-            document.getElementById("out").textContent = result ?? "(finished)";
+            resultText = typeof result === "string" ? result : String(result ?? "");
           } catch (err) {
-            document.getElementById("out").textContent = String(err);
+            resultText = String(err);
+          } finally {
+            pyodide.globals.delete?.("USER_SOURCE");
+            pyodide.globals.delete?.("TEST_SOURCE");
           }
+
+          document.getElementById("out").textContent = resultText || "(finished)";
         });
       }
 
       // ---- Hint Bot loader (robust) ----
       if(manifest.hints){
         document.getElementById("hint_card").classList.remove("hidden");
-        const ui = document.getElementById("hint_out");
-      
+        const chatEl = document.getElementById("hint_chat");
+        const statusEl = document.getElementById("hint_status");
+        const promptEl = document.getElementById("hint_prompt");
+        statusEl.textContent = "Checking device capabilities...";
+
         async function hasWebGPU() {
           if (!navigator.gpu) return false;
           try {
@@ -173,68 +187,201 @@
             return true;
           } catch { return false; }
         }
-      
+
         if (!(await hasWebGPU())) {
-          ui.textContent = "WebGPU not available on this device/browser (or blocked). Try latest Chrome/Edge on desktop.";
+          statusEl.textContent = "WebGPU not available on this device/browser (or blocked). Try the latest Chrome/Edge on desktop.";
         } else {
+          statusEl.textContent = "Loading hint bot...";
           const s = document.createElement("script");
           s.type = "module";
           s.innerHTML = `
             import * as webllm from "https://esm.run/@mlc-ai/web-llm@0.2.70";
-            const ui = document.getElementById("hint_out");
-      
-            // Try several prebuilt model IDs; pick the first that exists in this web-llm build
-            const candidates = [
-              "Phi-3.1-mini-4k-instruct-q4f16_1-MLC",   // tiny, fast (preferred)
-              "Phi-3-mini-4k-instruct-q4f16_0-MLC",
-              "Llama-3.2-1B-Instruct-q4f32_1-MLC",
-              "Llama-3.1-8B-Instruct-q4f32_1-MLC"       // heavier fallback
-            ];
-      
-            let engine, lastErr;
-      
-            for (const id of candidates) {
-              try {
-                engine = await webllm.CreateMLCEngine(id, {
-                  initProgressCallback: (r) => {
-                    const pct = r.progress ? " " + Math.round(r.progress*100) + "%" : "";
-                    ui.textContent = (r.text || \`Loading \${id}...\`) + pct;
+            (async () => {
+              const assignmentSlug = ${JSON.stringify(slug)};
+              const chatEl = document.getElementById("hint_chat");
+              const statusEl = document.getElementById("hint_status");
+
+              const storageKey = assignmentSlug ? "hintChat:" + assignmentSlug : null;
+              const supportsStorage = (() => {
+                if (!storageKey) return false;
+                try {
+                  const testKey = storageKey + "::test";
+                  localStorage.setItem(testKey, "1");
+                  localStorage.removeItem(testKey);
+                  return true;
+                } catch (err) {
+                  console.warn("Hint bot localStorage unavailable", err);
+                  return false;
+                }
+              })();
+
+              function loadHistory(){
+                if (!supportsStorage) return [];
+                try {
+                  const raw = localStorage.getItem(storageKey);
+                  if (!raw) return [];
+                  const parsed = JSON.parse(raw);
+                  if (Array.isArray(parsed)) {
+                    return parsed.filter((msg) => msg && typeof msg.content === "string" && (msg.role === "user" || msg.role === "assistant"));
                   }
-                });
-                ui.textContent = "Hint Bot ready.";
-                // Wire the ask function once we have an engine
-                window.__ask_hint = async function(prompt){
-                  if(!engine){ ui.textContent = "Model still loading..."; return; }
-                  const sys = "You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests. Ask short guiding questions that point the student to docs, debugging steps, or concepts. If asked for code, reply: 'I can’t provide code, but here’s a hint:' and continue with questions.";
-                  const messages = [{role:"system", content: sys},{role:"user", content: prompt}];
-                  try{
-                    const out = await engine.chat.completions.create({messages, temperature: 0.2, max_tokens: 200});
-                    ui.textContent = out.choices?.[0]?.message?.content || "No response.";
-                  }catch(e){
-                    ui.textContent = "Run error: " + (e?.message || e);
-                    console.error(e);
-                  }
-                };
-                break; // success
-              } catch (e) {
-                lastErr = e;
-                console.warn("Model failed:", id, e);
+                } catch (err) {
+                  console.warn("Failed to load hint history", err);
+                }
+                return [];
               }
-            }
-      
-            if (!engine) {
-              ui.textContent = "Failed to load a model from the candidate list. " + (lastErr?.message || lastErr || "");
-            }
+
+              function saveHistory(){
+                if (!supportsStorage) return;
+                try {
+                  localStorage.setItem(storageKey, JSON.stringify(conversation));
+                } catch (err) {
+                  console.warn("Failed to save hint history", err);
+                }
+              }
+
+              const candidates = [
+                "Phi-3.1-mini-4k-instruct-q4f16_1-MLC",
+                "Phi-3-mini-4k-instruct-q4f16_0-MLC",
+                "Llama-3.2-1B-Instruct-q4f32_1-MLC",
+                "Llama-3.1-8B-Instruct-q4f32_1-MLC"
+              ];
+
+              const systemPrompt = "You are a Socratic Python TA. NEVER write code. NEVER reveal answers or tests. Ask short guiding questions that point the student to docs, debugging steps, or concepts. If asked for code, reply: 'I can’t provide code, but here’s a hint:' and continue with questions. If you are given an error message, summarize the issue in easy to understand language and explain how they might fix it.";
+              const conversation = loadHistory();
+
+              function renderChat(){
+                if(!chatEl) return;
+                chatEl.innerHTML = "";
+                for (const msg of conversation) {
+                  const wrapper = document.createElement("div");
+                  wrapper.className = "chatmsg " + msg.role;
+
+                  const role = document.createElement("div");
+                  role.className = "role";
+                  role.textContent = msg.role === "assistant" ? "Hint bot" : "You";
+
+                  const bubble = document.createElement("div");
+                  bubble.className = "bubble";
+                  bubble.textContent = msg.content;
+
+                  wrapper.appendChild(role);
+                  wrapper.appendChild(bubble);
+                  chatEl.appendChild(wrapper);
+                }
+                chatEl.scrollTop = chatEl.scrollHeight;
+              }
+
+              function pushMessage(role, content){
+                conversation.push({role, content});
+                renderChat();
+                saveHistory();
+              }
+
+              function clearHistory(){
+                if (!supportsStorage) return;
+                try {
+                  localStorage.removeItem(storageKey);
+                } catch (err) {
+                  console.warn("Failed to clear hint history", err);
+                }
+              }
+
+              renderChat();
+
+              window.__hint_busy = false;
+              window.__reset_hint = () => {
+                conversation.length = 0;
+                renderChat();
+                clearHistory();
+                if(statusEl) statusEl.textContent = engine ? "Hint bot ready." : "Conversation cleared.";
+              };
+
+              window.__ask_hint = async () => {
+                if(statusEl) statusEl.textContent = "Model still loading...";
+                return false;
+              };
+
+              let engine = null;
+              let lastErr = null;
+
+              for (const id of candidates) {
+                try {
+                  engine = await webllm.CreateMLCEngine(id, {
+                    initProgressCallback: (r) => {
+                      if (!statusEl) return;
+                      const pct = r.progress ? " " + Math.round(r.progress*100) + "%" : "";
+                      statusEl.textContent = (r.text || ("Loading " + id + "...")) + pct;
+                    }
+                  });
+                  statusEl.textContent = "Hint bot ready.";
+                  break;
+                } catch (e) {
+                  lastErr = e;
+                  console.warn("Model failed:", id, e);
+                }
+              }
+
+              if (!engine) {
+                if(statusEl) statusEl.textContent = "Failed to load a model." + (lastErr && lastErr.message ? " " + lastErr.message : "");
+                window.__ask_hint = async () => {
+                  if(statusEl) statusEl.textContent = "Model failed to load.";
+                  return false;
+                };
+                return;
+              }
+
+              statusEl.textContent = "Hint bot ready.";
+              renderChat();
+
+              window.__ask_hint = async function(prompt){
+                if(window.__hint_busy){
+                  if(statusEl) statusEl.textContent = "One moment - still answering the previous question.";
+                  return false;
+                }
+
+                window.__hint_busy = true;
+                pushMessage("user", prompt);
+                if(statusEl) statusEl.textContent = "Thinking...";
+
+                const messages = [{role:"system", content: systemPrompt}, ...conversation];
+
+                try{
+                  const out = await engine.chat.completions.create({messages, temperature: 0.2, max_tokens: 200});
+                  const reply = out.choices?.[0]?.message?.content || "No response.";
+                  pushMessage("assistant", reply);
+                  if(statusEl) statusEl.textContent = "";
+                }catch(e){
+                  console.error(e);
+                  if(statusEl) statusEl.textContent = "Run error: " + (e?.message || e);
+                }finally{
+                  window.__hint_busy = false;
+                }
+
+                return true;
+              };
+            })();
           `;
           document.head.appendChild(s);
         }
 
-        document.getElementById("ask_hint").addEventListener("click", () => {
-          const p = document.getElementById("hint_prompt").value.trim();
-          if(!p){ document.getElementById("hint_out").textContent = "Please describe where you're stuck."; return; }
-          window.__ask_hint?.(p);
+        document.getElementById("ask_hint").addEventListener("click", async () => {
+          const prompt = promptEl.value.trim();
+          if(!prompt){
+            statusEl.textContent = "Please describe where you're stuck.";
+            return;
+          }
+          const handled = await window.__ask_hint?.(prompt);
+          if(handled){
+            promptEl.value = "";
+          }
+          promptEl.focus();
         });
-        document.getElementById("clear_hint").addEventListener("click", () => { document.getElementById("hint_prompt").value=""; document.getElementById("hint_out").textContent=""; });
+
+        document.getElementById("clear_hint").addEventListener("click", () => {
+          promptEl.value = "";
+          window.__reset_hint?.();
+          promptEl.focus();
+        });
       }
 
     }catch(e){
